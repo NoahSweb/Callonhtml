@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Group Video Chat Rooms</title>
+<style>
+  body { font-family: sans-serif; padding: 20px; }
+  #room-list { margin-bottom: 20px; }
+  .room-entry { padding: 5px; margin: 5px 0; border: 1px solid #ccc; cursor: pointer; }
+  .room-entry:hover { background: #f0f0f0; }
+  #video-chat { display: none; }
+</style>
+</head>
+<body>
+
+<h2>Available Rooms</h2>
+<div id="room-list">Loading...</div>
+
+<h3>Create or Join Room</h3>
+<input id="display-name" placeholder="Your name" />
+<input id="room-name" placeholder="Room name" />
+<button id="join-btn">Join</button>
+
+<div id="video-chat">
+  <p><strong>You are in:</strong> <span id="current-room"></span></p>
+  <video id="my-video" autoplay muted playsinline style="width:200px; background:black;"></video>
+  <div id="remote-videos"></div>
+  <button id="leave-btn">Leave Room</button>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+<script>
+const BIN_ID = "685b46ae8a456b7966b514b8";
+const API_KEY = "$2a$10$AfjIgSPRYFxJneR4GoH/I.T3I/3ZkctjAXJGpTOE.gb13gZxIUw5G";
+const API_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
+
+let peer = null;
+let myStream = null;
+let myId = null;
+let currentRoom = null;
+let displayName = "";
+const connections = {};
+
+async function fetchRoomList() {
+  const res = await fetch(API_URL, { headers: { "X-Master-Key": API_KEY } });
+  const json = await res.json();
+  return json.record.rooms || {};
+}
+
+async function updateRoomList(rooms) {
+  await fetch(API_URL, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Master-Key": API_KEY,
+    },
+    body: JSON.stringify({ rooms }),
+  });
+}
+
+async function listRooms() {
+  const roomListDiv = document.getElementById("room-list");
+  roomListDiv.innerHTML = "Loading...";
+  try {
+    const rooms = await fetchRoomList();
+    roomListDiv.innerHTML = "";
+    for (const [room, users] of Object.entries(rooms)) {
+      const div = document.createElement("div");
+      div.className = "room-entry";
+      div.textContent = `${room} (${users.length} users): ${users.join(", ")}`;
+      div.onclick = () => joinRoom(room);
+      roomListDiv.appendChild(div);
+    }
+    if (Object.keys(rooms).length === 0) {
+      roomListDiv.textContent = "No rooms active.";
+    }
+  } catch (e) {
+    roomListDiv.textContent = "Error loading rooms.";
+  }
+}
+
+async function joinRoom(name) {
+  displayName = document.getElementById("display-name").value.trim();
+  if (!displayName) return alert("Enter your name first.");
+
+  currentRoom = name.trim();
+  document.getElementById("current-room").textContent = currentRoom;
+  document.getElementById("video-chat").style.display = "block";
+
+  const rooms = await fetchRoomList();
+  if (!rooms[currentRoom]) rooms[currentRoom] = [];
+  if (!rooms[currentRoom].includes(displayName)) rooms[currentRoom].push(displayName);
+  await updateRoomList(rooms);
+
+  await startPeer();
+  listRooms();
+}
+
+async function startPeer() {
+  myStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  document.getElementById("my-video").srcObject = myStream;
+
+  peer = new Peer();
+
+  peer.on("open", id => {
+    myId = id;
+    broadcastJoin();
+  });
+
+  peer.on("call", call => {
+    call.answer(myStream);
+    call.on("stream", remoteStream => addRemoteVideo(call.peer, remoteStream));
+  });
+}
+
+function broadcastJoin() {
+  for (let pid in connections) {
+    if (!connections[pid].called) {
+      const call = peer.call(pid, myStream);
+      call.on("stream", stream => addRemoteVideo(pid, stream));
+      connections[pid].called = true;
+    }
+  }
+}
+
+function addRemoteVideo(id, stream) {
+  if (document.getElementById(`vid-${id}`)) return;
+  const vid = document.createElement("video");
+  vid.id = `vid-${id}`;
+  vid.srcObject = stream;
+  vid.autoplay = true;
+  vid.playsInline = true;
+  vid.style.width = "200px";
+  document.getElementById("remote-videos").appendChild(vid);
+}
+
+async function leaveRoom() {
+  peer.destroy();
+  myStream.getTracks().forEach(t => t.stop());
+  document.getElementById("video-chat").style.display = "none";
+
+  const rooms = await fetchRoomList();
+  if (rooms[currentRoom]) {
+    rooms[currentRoom] = rooms[currentRoom].filter(n => n !== displayName);
+    if (rooms[currentRoom].length === 0) delete rooms[currentRoom];
+    await updateRoomList(rooms);
+  }
+  listRooms();
+}
+
+// Initial
+listRooms();
+document.getElementById("join-btn").onclick = () => {
+  const room = document.getElementById("room-name").value.trim();
+  if (!room) return alert("Enter a room name.");
+  joinRoom(room);
+};
+document.getElementById("leave-btn").onclick = leaveRoom;
+</script>
+</body>
+</html>
